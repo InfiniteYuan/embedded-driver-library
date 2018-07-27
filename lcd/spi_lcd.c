@@ -1,27 +1,16 @@
-/*
- * ESPRSSIF MIT License
- *
- * Copyright (c) 2015 <ESPRESSIF SYSTEMS (SHANGHAI) PTE LTD>
- *
- * Permission is hereby granted for use on ESPRESSIF SYSTEMS ESP8266 only, in which case,
- * it is free of charge, to any person obtaining a copy of this software and associated
- * documentation files (the "Software"), to deal in the Software without restriction, including
- * without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the Software is furnished
- * to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all copies or
- * substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
- * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
- * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
- * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- *
- */
+// Copyright 2015-2016 Espressif Systems (Shanghai) PTE LTD
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
 
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 #include <sys/param.h>
 #include "spi_lcd.h"
 #include "driver/gpio.h"
@@ -140,7 +129,7 @@ void lcd_data(spi_device_handle_t spi, const uint8_t *data, int len, lcd_dc_t *d
     assert(ret == ESP_OK);              // Should have had no issues.
 }
 
-uint32_t lcd_init(lcd_conf_t* lcd_conf, spi_device_handle_t *spi_wr_dev, lcd_dc_t *dc)
+uint32_t lcd_init(lcd_conf_t* lcd_conf, spi_device_handle_t *spi_wr_dev, lcd_dc_t *dc, int dma_chan)
 {
 
     //Initialize non-SPI GPIOs
@@ -157,15 +146,17 @@ uint32_t lcd_init(lcd_conf_t* lcd_conf, spi_device_handle_t *spi_wr_dev, lcd_dc_
         vTaskDelay(100 / portTICK_RATE_MS);
     }
 
-    //Initialize SPI Bus for LCD
-    spi_bus_config_t buscfg = {
-        .miso_io_num = lcd_conf->pin_num_miso,
-        .mosi_io_num = lcd_conf->pin_num_mosi,
-        .sclk_io_num = lcd_conf->pin_num_clk,
-        .quadwp_io_num = -1,
-        .quadhd_io_num = -1,
-    };
-    spi_bus_initialize(lcd_conf->spi_host, &buscfg, 1);
+    if (lcd_conf->init_spi_bus) {
+        //Initialize SPI Bus for LCD
+        spi_bus_config_t buscfg = {
+            .miso_io_num = lcd_conf->pin_num_miso,
+            .mosi_io_num = lcd_conf->pin_num_mosi,
+            .sclk_io_num = lcd_conf->pin_num_clk,
+            .quadwp_io_num = -1,
+            .quadhd_io_num = -1,
+        };
+        spi_bus_initialize(lcd_conf->spi_host, &buscfg, dma_chan);
+    }
 
     spi_device_interface_config_t devcfg = {
         // Use low speed to read ID.
@@ -182,6 +173,7 @@ uint32_t lcd_init(lcd_conf_t* lcd_conf, spi_device_handle_t *spi_wr_dev, lcd_dc_
 
     // Use high speed to write LCD
     devcfg.clock_speed_hz = lcd_conf->clk_freq;
+    devcfg.flags = SPI_DEVICE_HALFDUPLEX;
     spi_bus_add_device(lcd_conf->spi_host, &devcfg, spi_wr_dev);
 
     int cmd = 0;

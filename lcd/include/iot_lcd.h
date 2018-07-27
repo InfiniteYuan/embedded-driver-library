@@ -1,5 +1,18 @@
-#ifndef _ESP_ADAFRUIT_LCD_H_
-#define _ESP_ADAFRUIT_LCD_H_
+// Copyright 2015-2016 Espressif Systems (Shanghai) PTE LTD
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+#ifndef _IOT_LCD_H_
+#define _IOT_LCD_H_
 /*This is the Adafruit subclass graphics file*/
 
 #include "string.h"
@@ -48,7 +61,7 @@
 #define COLOR_FUCHSIA     0xF81F
 #define COLOR_ESP_BKGD    0xD185
 
-#define MAKEWORD(b1, b2, b3, b4) ((uint32_t)((b1) | ((b2) << 8) | ((b3) << 16) | ((b4) << 24)))
+#define MAKEWORD(b1, b2, b3, b4) (uint32_t(b1) | ((b2) << 8) | ((b3) << 16) | ((b4) << 24))
 
 
 typedef enum {
@@ -62,17 +75,18 @@ typedef enum {
  */
 typedef struct {
     lcd_model_t lcd_model;
-    uint8_t pin_num_miso;        /*!<MasterIn, SlaveOut pin*/
-    uint8_t pin_num_mosi;        /*!<MasterOut, SlaveIn pin*/
-    uint8_t pin_num_clk;         /*!<SPI Clock pin*/
-    uint8_t pin_num_cs;          /*!<SPI Chip Select Pin*/
-    uint8_t pin_num_dc;          /*!<Pin to select Data or Command for LCD*/
-    uint8_t pin_num_rst;         /*!<Pin to hardreset LCD*/
-    uint8_t pin_num_bckl;        /*!<Pin for adjusting Backlight- can use PWM/DAC too*/
+    int8_t pin_num_miso;        /*!<MasterIn, SlaveOut pin*/
+    int8_t pin_num_mosi;        /*!<MasterOut, SlaveIn pin*/
+    int8_t pin_num_clk;         /*!<SPI Clock pin*/
+    int8_t pin_num_cs;          /*!<SPI Chip Select Pin*/
+    int8_t pin_num_dc;          /*!<Pin to select Data or Command for LCD*/
+    int8_t pin_num_rst;         /*!<Pin to hardreset LCD*/
+    int8_t pin_num_bckl;        /*!<Pin for adjusting Backlight- can use PWM/DAC too*/
     int clk_freq;                /*!< spi clock frequency */
     uint8_t rst_active_level;    /*!< reset pin active level */
     uint8_t bckl_active_level;   /*!< back-light active level */
     spi_host_device_t spi_host;  /*!< spi host index*/
+    bool init_spi_bus;
 } lcd_conf_t;
 
 /**
@@ -91,14 +105,16 @@ typedef struct {
 } lcd_dc_t;
 
 #ifdef __cplusplus
-#include "Adafruit_GFX_AS.h"
-class CEspLcd: public Adafruit_GFX_AS
+#include "Adafruit_GFX.h"
+
+class CEspLcd: public Adafruit_GFX
 {
 private:
     spi_device_handle_t spi_wr = NULL;
     uint8_t tabcolor;
     bool dma_mode;
     int dma_buf_size;
+    uint8_t m_dma_chan;
     uint16_t m_height;
     uint16_t m_width;
     SemaphoreHandle_t spi_mux;
@@ -114,21 +130,19 @@ private:
     inline void transmitCmd(uint8_t cmd);
     void _fastSendBuf(const uint16_t* buf, int point_num, bool swap = true);
     void _fastSendRep(uint16_t val, int rep_num);
+    /**
+     * @brief Avoid using it, Internal use for main class drawChar API
+     */
+    void drawBitmapFont(int16_t x, int16_t y, uint8_t w, uint8_t h, const uint16_t *bitmap);
 public:
     lcd_id_t id;
-    CEspLcd(lcd_conf_t* lcd_conf, int height = LCD_TFTHEIGHT, int width = LCD_TFTWIDTH, bool dma_en = true, int dma_word_size = 1024);
-    ~CEspLcd();
+    CEspLcd(lcd_conf_t* lcd_conf, int height = LCD_TFTHEIGHT, int width = LCD_TFTWIDTH, bool dma_en = true, int dma_word_size = 1024, int dma_chan = 1);
+    virtual ~CEspLcd();
     /**
      * @brief init spi bus and lcd screen
      * @param lcd_conf LCD parameters
      */
     void setSpiBus(lcd_conf_t *lcd_conf);
-
-    spi_device_handle_t getSpidevice();
-
-    SemaphoreHandle_t getSemphor();
-
-    lcd_dc_t getlcd_dc();
 
     /**
      * @brief get LCD ID
@@ -157,7 +171,7 @@ public:
      * @param w width of image in bmp array
      * @param h height of image in bmp array
      */
-    void drawBitmap(int16_t x, int16_t y, const uint16_t *bitmap, int16_t w, int16_t h, bool swap = true);
+    void drawBitmap(int16_t x, int16_t y, const uint16_t *bitmap, int16_t w, int16_t h);
 
     /**
      * @brief Load bitmap data from flash partition and fill the pixels on LCD screen
@@ -176,11 +190,19 @@ public:
      */
     esp_err_t drawBitmapFromFlashPartition(int16_t x, int16_t y, int16_t w, int16_t h, esp_partition_t* data_partition,
             int data_offset = 0, int malloc_pixal_size = 1024, bool swap_bytes_en = true);
-    /**
-     * @brief Avoid using it, Internal use for main class drawChar API
-     */
-    void drawBitmapFont(int16_t x, int16_t y, uint8_t w, uint8_t h, const uint16_t *bitmap);
 
+    /**
+     * @brief print single char
+     * @param poX position X
+     * @param poY position Y
+     * @param c Single character
+     * @param color Foreground Font color
+
+
+     * @param bg Background Font color
+     * @param size Font size
+     */
+    void drawChar(int16_t x, int16_t y, unsigned char c, uint16_t color, uint16_t bg, uint8_t size);
 
     /**
      * @brief Draw a Vertical line
@@ -248,6 +270,14 @@ public:
      * @brief write 7-segment number
      */
     int drawNumberSevSeg(int long_num, uint16_t poX, uint16_t poY, uint8_t size);
+
+    int write_char(uint8_t c);
+
+    int drawString(const char *string, uint16_t x, uint16_t y);
+
+    int drawNumber(int long_num, uint16_t poX, uint16_t poY);
+
+    int drawFloat(float floatNumber, uint8_t decimal, uint16_t poX, uint16_t poY);
 };
 
 #endif

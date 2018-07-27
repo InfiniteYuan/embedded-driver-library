@@ -36,10 +36,11 @@ POSSIBILITY OF SUCH DAMAGE.
  */
 
 
-#include "Adafruit_GFX_AS.h"
+#include "Adafruit_GFX.h"
 #include "iot_lcd.h"
 #include "spi_lcd.h"
-#include "fonts/font7s.h"
+#include "font7s.h"
+#include "glcdfont.h"
 
 #include "esp_partition.h"
 #include "esp_log.h"
@@ -61,7 +62,7 @@ POSSIBILITY OF SUCH DAMAGE.
 #define SWAPBYTES(i) ((i>>8) | (i<<8))
 static const char* TAG = "LCD";
 
-CEspLcd::CEspLcd(lcd_conf_t* lcd_conf, int height, int width, bool dma_en, int dma_word_size) : Adafruit_GFX_AS(width, height)
+CEspLcd::CEspLcd(lcd_conf_t* lcd_conf, int height, int width, bool dma_en, int dma_word_size, int dma_chan) : Adafruit_GFX(width, height)
 {
     m_height = height;
     m_width  = width;
@@ -69,6 +70,7 @@ CEspLcd::CEspLcd(lcd_conf_t* lcd_conf, int height, int width, bool dma_en, int d
     dma_mode = dma_en;
     dma_buf_size = dma_word_size;
     spi_mux = xSemaphoreCreateRecursiveMutex();
+    m_dma_chan = dma_chan;
     setSpiBus(lcd_conf);
 }
 
@@ -82,25 +84,10 @@ void CEspLcd::setSpiBus(lcd_conf_t *lcd_conf)
 {
     cmd_io = (gpio_num_t) lcd_conf->pin_num_dc;
     dc.dc_io = cmd_io;
-    id.id = lcd_init(lcd_conf, &spi_wr, &dc);
+    id.id = lcd_init(lcd_conf, &spi_wr, &dc, m_dma_chan);
     id.mfg_id = (id.id >> (8 * 1)) & 0xff ;
     id.lcd_driver_id = (id.id >> (8 * 2)) & 0xff;
     id.lcd_id = (id.id >> (8 * 3)) & 0xff;
-}
-
-spi_device_handle_t CEspLcd::getSpidevice()
-{
-    return spi_wr;
-}
-
-SemaphoreHandle_t CEspLcd::getSemphor()
-{
-    return spi_mux;
-}
-
-lcd_dc_t CEspLcd::getlcd_dc()
-{
-    return dc;
 }
 
 inline void CEspLcd::setAddrWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
@@ -186,10 +173,10 @@ void CEspLcd::_fastSendBuf(const uint16_t* buf, int point_num, bool swap)
                 for (int i = 0; i < trans_points; i++) {
                     data_buf[i] = SWAPBYTES(buf[i + offset]);
                 }
-                transmitData((uint8_t*) (data_buf), trans_points * sizeof(uint16_t));
             } else {
-                transmitData((uint8_t*) (buf + offset), trans_points * sizeof(uint16_t));
+                memcpy((uint8_t*) data_buf, (uint8_t*) (buf + offset), trans_points * sizeof(uint16_t));
             }
+            transmitData((uint8_t*) (data_buf), trans_points * sizeof(uint16_t));
             offset += trans_points;
             point_num -= trans_points;
         }
@@ -219,18 +206,15 @@ void CEspLcd::_fastSendRep(uint16_t val, int rep_num)
     data_buf = NULL;
 }
 
-void CEspLcd::drawBitmap(int16_t x, int16_t y, const uint16_t *bitmap, int16_t w, int16_t h, bool swap)
+void CEspLcd::drawBitmap(int16_t x, int16_t y, const uint16_t *bitmap, int16_t w, int16_t h)
 {
     xSemaphoreTakeRecursive(spi_mux, portMAX_DELAY);
     setAddrWindow(x, y, x + w - 1, y + h - 1);
     if (dma_mode) {
-        _fastSendBuf(bitmap, w * h, swap);
+        _fastSendBuf(bitmap, w * h);
     } else {
         for (int i = 0; i < w * h; i++) {
-            if(swap)
-                transmitData(SWAPBYTES(bitmap[i]), 1);
-            else
-                transmitData(bitmap[i], 1);
+            transmitData(SWAPBYTES(bitmap[i]), 1);
         }
     }
     xSemaphoreGiveRecursive(spi_mux);
@@ -362,26 +346,26 @@ void CEspLcd::setRotation(uint8_t m)
     uint8_t data = 0;
     rotation = m % 4;  //Can't be more than 3
     switch (rotation) {
-        case 0:
-            data = MADCTL_MX | MADCTL_BGR;
-            _width = m_width;
-            _height = m_height;
-            break;
-        case 1:
-            data = MADCTL_MV | MADCTL_BGR;
-            _width = m_height;
-            _height = m_width;
-            break;
-        case 2:
-            data = MADCTL_MY | MADCTL_BGR;
-            _width = m_width;
-            _height = m_height;
-            break;
-        case 3:
-            data = MADCTL_MX | MADCTL_MY | MADCTL_MV | MADCTL_BGR;
-            _width = m_height;
-            _height = m_width;
-            break;
+    case 0:
+        data = MADCTL_MX | MADCTL_BGR;
+        _width = m_width;
+        _height = m_height;
+        break;
+    case 1:
+        data = MADCTL_MV | MADCTL_BGR;
+        _width = m_height;
+        _height = m_width;
+        break;
+    case 2:
+        data = MADCTL_MY | MADCTL_BGR;
+        _width = m_width;
+        _height = m_height;
+        break;
+    case 3:
+        data = MADCTL_MX | MADCTL_MY | MADCTL_MV | MADCTL_BGR;
+        _width = m_height;
+        _height = m_width;
+        break;
     }
     transmitCmdData(LCD_MADCTL, data, 1);
 }
@@ -465,15 +449,15 @@ int CEspLcd::drawUnicodeSevSeg(uint16_t uniCode, uint16_t x, uint16_t y, uint8_t
     int trans_points = point_num > dma_buf_size ? dma_buf_size : point_num;
     for (int i = 0; i < height; i++) {
         for (int j = 0; j < w; j++) {
-            line = *(flash_address + w*i+j);
-            for(int m = 0; m < 8; m++) {
-                if ((line >> (7-m)) & 0x1) {
+            line = *(flash_address + w * i + j);
+            for (int m = 0; m < 8; m++) {
+                if ((line >> (7 - m)) & 0x1) {
                     data_buf[idx++] = SWAPBYTES(textcolor);
                 } else {
                     data_buf[idx++] = SWAPBYTES(textbgcolor);
                 }
 
-                if(idx >= trans_points) {
+                if (idx >= trans_points) {
                     transmitData((uint8_t*) (data_buf), trans_points * sizeof(uint16_t));
                     point_num -= trans_points;
                     idx = 0;
@@ -512,3 +496,238 @@ int CEspLcd::drawNumberSevSeg(int long_num, uint16_t poX, uint16_t poY, uint8_t 
     return drawStringSevSeg(tmp, poX, poY, size);
 }
 
+int CEspLcd::write_char(uint8_t c)
+{
+    if (!gfxFont) { // 'Classic' built-in font
+        if (c == '\n') {                       // Newline?
+            cursor_x  = 0;                     // Reset x to zero,
+            cursor_y += textsize * 8;          // advance y one line
+        }
+        else if (c != '\r') {                  // Ignore carriage returns
+            if (wrap && ((cursor_x + textsize * 6) > _width)) { // Off right?
+                cursor_x  = 0;                 // Reset x to zero,
+                cursor_y += textsize * 8;      // advance y one line
+            }
+            drawChar(cursor_x, cursor_y, c, textcolor, textbgcolor, textsize);
+            cursor_x += textsize * 6;          // Advance x one char
+        }
+    }
+
+    else {
+        if (c == '\n') {
+            cursor_x  = 0;
+            cursor_y += (int16_t)textsize * (uint8_t)gfxFont->yAdvance;
+        }
+        else if (c != '\r') {
+            uint8_t first = gfxFont->first;
+            if ((c >= first) && (c <= (uint8_t)gfxFont->last)) {
+
+                GFXglyph *glyph = &(((GFXglyph *)gfxFont->glyph))[c - first];
+                uint8_t   w     = glyph->width,
+                          h     = glyph->height;
+
+                if ((w > 0) && (h > 0)) {                // Is there an associated bitmap?
+                    int16_t xo = (int8_t)glyph->xOffset; // sic
+                    if (wrap && ((cursor_x + textsize * (xo + w)) > _width)) {
+                        cursor_x  = 0;
+                        cursor_y += (int16_t)textsize * (uint8_t)gfxFont->yAdvance;
+                    }
+                    drawChar(cursor_x, cursor_y, c, textcolor, textbgcolor, textsize);
+                }
+                cursor_x += (uint8_t)glyph->xAdvance * (int16_t)textsize;
+            }
+        }
+    }
+    return cursor_x;
+}
+
+int CEspLcd::drawString(const char *string, uint16_t x, uint16_t y)
+{
+    uint16_t xPlus = x;
+    setCursor(xPlus, y);
+    while (*string) {
+        xPlus = write_char(*string);        // write_char string char-by-char                 
+        setCursor(xPlus, y);       // increment cursor
+        string++;                      // Move cursor right
+    }
+    return xPlus;
+}
+
+int CEspLcd::drawNumber(int long_num, uint16_t poX, uint16_t poY)
+{
+    char tmp[10];
+    if (long_num < 0) {
+        snprintf(tmp, sizeof(tmp), "%d", long_num);
+    } else {
+        snprintf(tmp, sizeof(tmp), "%u", long_num);
+    }
+    return drawString(tmp, poX, poY);
+}
+
+int CEspLcd::drawFloat(float floatNumber, uint8_t decimal, uint16_t poX, uint16_t poY)
+{
+    unsigned int temp = 0;
+    float decy = 0.0;
+    float rounding = 0.5;
+    float eep = 0.000001;
+    uint16_t xPlus = 0;
+
+    if (floatNumber - 0.0 < eep) {
+        xPlus       = drawString("-", poX, poY);
+        floatNumber = -floatNumber;
+        poX         = xPlus;
+    }
+
+    for (unsigned char i = 0; i < decimal; ++i) {
+        rounding /= 10.0;
+    }
+    
+    floatNumber += rounding;
+    temp         = (long)floatNumber;
+    xPlus        = drawNumber(temp, poX, poY);
+    poX          = xPlus;
+
+    if (decimal > 0) {
+        xPlus = drawString(".", poX, poY);
+        poX   = xPlus;                                       /* Move cursor right   */
+    } else {
+        return poX;
+    }
+
+    decy = floatNumber - temp;
+    for (unsigned char i = 0; i < decimal; i++) {
+        decy *= 10;                                         /* For the next decimal*/
+        temp  = decy;                                        /* Get the decimal     */
+        xPlus = drawNumber(temp, poX, poY);
+        poX   = xPlus;                                       /* Move cursor right   */
+        decy -= temp;
+    }
+    return poX;
+}
+
+void CEspLcd::drawChar(int16_t x, int16_t y, unsigned char c, uint16_t color, uint16_t bg, uint8_t size)
+{
+    uint16_t swapped_foregnd_color = SWAPBYTES(color);  //SWAP earlier, or use SPI LSB first mode
+    uint16_t swapped_backgnd_color = SWAPBYTES(bg);
+
+    if(!gfxFont) { // 'Classic' built-in font
+
+        if((x >= _width)            || // Clip right
+           (y >= _height)           || // Clip bottom
+           ((x + 6 * size - 1) < 0) || // Clip left
+           ((y + 8 * size - 1) < 0))   // Clip top
+            return;
+
+        if(!_cp437 && (c >= 176)) c++; // Handle 'classic' charset behavior
+
+        //Check if bg!=color which is a flag for transperant backgrounds in our case
+        if(color != bg) {
+            //Make a premade bmp canvas and push the entire char canvas to the screen
+            uint16_t bmp[8][5];
+            for (uint8_t i = 0; i < 5; i++) { // Char bitmap = 5 columns
+                uint8_t line = font[c * 5 + i];
+                for (uint8_t j = 0; j < 8; j++, line >>= 1) {
+                    if(line & 1) {
+                        if(size == 1) {
+                            bmp[j][i] = swapped_foregnd_color;
+                            //drawPixel(x+i, y+j, color); //The Old Adafruit way
+                        }
+                        else {
+                            fillRect(x+i*size, y+j*size, size, size, color); //not as fast... set font size = 1 for speed
+                        }
+                    }
+                    else {
+                        bmp[j][i] = swapped_backgnd_color;
+                    }
+                }
+            }
+
+            if(size == 1) {
+                uint16_t bmp_arr[40];
+                for (uint8_t cnt = 0; cnt < 40; cnt++) {
+                    bmp_arr[cnt] = (bmp[(uint8_t)(cnt / 5)][(uint8_t)(cnt % 5)]); //5*8 Matrix to 40 element Array
+                }
+                drawBitmapFont(x, y, 5, 8, bmp_arr); //Speeds up fonts instead of using drawPixel
+            }
+        }
+
+        //If user wants transperant background, check for transperancy flag which is (color == bg)
+        else if(color == bg) {
+            //Can't speedup fonts since no pushing pre-made canvas not possible, the fonts printed by this loop will be slow
+            for (uint8_t i = 0; i < 5; i++) { // Char bitmap = 5 columns
+                uint8_t line = font[c * 5 + i];
+                for (uint8_t j = 0; j < 8; j++, line >>= 1) {
+                    if(line & 1) {
+                        if(size == 1) {
+                            drawPixel(x+i, y+j, color); //The Old Adafruit way
+                        }
+                        else {
+                            fillRect(x+i*size, y+j*size, size, size, color); //not as fast... set font size = 1 for speed
+                        }
+                    }
+                }
+            }
+        }
+    }
+    else {
+        // Custom font
+        // Character is assumed previously filtered by write_char() to eliminate
+        // newlines, returns, non-printable characters, etc.  Calling
+        // drawChar() directly with 'bad' characters of font may cause mayhem!
+
+        c -= (uint8_t)gfxFont->first;
+        GFXglyph *glyph  = &(((GFXglyph *)(gfxFont->glyph))[c]);
+        uint8_t  *bitmap = (uint8_t *)(gfxFont->bitmap);
+
+        uint16_t bo = glyph->bitmapOffset;
+        uint8_t  w  = glyph->width,
+                 h  = glyph->height;
+        int8_t   xo = glyph->xOffset,
+                 yo = glyph->yOffset;
+        uint8_t  xx, yy, bits = 0, bit = 0;
+        int16_t  xo16 = 0, yo16 = 0;
+
+        if(size > 1) {
+            xo16 = xo;
+            yo16 = yo;
+        }
+        if(color != bg) {
+            uint16_t bmp[w+5][h+5]; //w*h plus some extra space
+            for(yy=0; yy<h; yy++) {
+                for(xx=0; xx<w; xx++) {
+                    if(!(bit++ & 7)) {
+                        bits = bitmap[bo++];
+                    }
+
+                    if(bits & 0x80) {
+                        if(size == 1) {
+                            //drawPixel(x+xo+xx, y+yo+yy, color); //Old adafruit way
+                            bmp[yy][xx] = swapped_foregnd_color;
+                        }
+                        else {
+                            fillRect(x+(xo16+xx)*size, y+(yo16+yy)*size, size, size, color);
+                        }
+                    }
+
+                    if(!(bits & 0x80)) {
+                        bmp[yy][xx] = swapped_backgnd_color;
+                    }
+                    bits <<= 1;
+                }
+            }
+
+            if (size == 1) {
+                uint16_t bmp_arr[w*h];
+                for (uint8_t cnt = 0; cnt < w*h; cnt++) {
+                    bmp_arr[cnt] = (bmp[(uint8_t)(cnt / w)][(uint8_t)(cnt % w)]);
+                }
+                drawBitmapFont(x+xo, y+yo, w, h, bmp_arr); //Speeds up fonts instead of using drawPixel
+            }
+        }
+
+        else if(color == bg) {
+            //Unimplemented: Transparent bg for custom fonts
+            ESP_LOGE("LCD", "Custom fonts with transparent bg not supported yet\n");
+        }
+    } // End classic vs custom font
+}
