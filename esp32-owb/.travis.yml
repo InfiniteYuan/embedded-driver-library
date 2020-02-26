@@ -1,0 +1,42 @@
+# Build and deploy doxygen documention to GitHub Pages
+sudo: false
+dist: trusty
+
+# Blacklist
+branches:
+  only:
+    - master
+
+# Environment variables
+env:
+  global:
+    - GH_REPO_REF: github.com/DavidAntliff/esp32-owb.git
+
+# Install dependencies
+addons:
+  apt:
+    packages:
+      - doxygen
+      - doxygen-doc
+      - doxygen-latex
+      - doxygen-gui
+      - graphviz
+
+# Build the docs
+script:
+  - cd doc
+  - doxygen
+
+# Deploy using Travis-CI/GitHub Pages integration support
+deploy:
+  # https://github.com/travis-ci/travis-ci/issues/9312#issuecomment-371590249
+  edge:
+    branch: v1.8.47
+  provider: pages
+  skip-cleanup: true
+  local-dir: doc/html
+  github-token: $GITHUB_TOKEN
+  on:
+    branch: master
+  target-branch: gh-pages
+
